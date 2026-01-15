@@ -121,6 +121,30 @@ def load_launch_windows_from_csv(csv_path: str):
             })
     return windows
 
+def moon_illumination(dt: datetime) -> float:
+    from skyfield.api import load
+    from skyfield.framelib import ecliptic_frame
+
+    ts = load.timescale()
+    # t = ts.utc(2019, 12, 9, 15, 36)
+    t = _ts.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond / 1e6)
+
+
+    sun, moon, earth = _eph["sun"], _eph["moon"], _eph["earth"]
+
+    e = earth.at(t)
+    s = e.observe(sun).apparent()
+    m = e.observe(moon).apparent()
+
+    _, slon, _ = s.frame_latlon(ecliptic_frame)
+    _, mlon, _ = m.frame_latlon(ecliptic_frame)
+    phase = (mlon.degrees - slon.degrees) % 360.0
+
+    percent = 100.0 * m.fraction_illuminated(sun)
+
+    return phase, percent
+
+
 def calculate_moon_positions_for_launch_windows(csv_path: str = None, latitude= KSC_LAT, longitude= KSC_LON, local_tz: str = KSC_TZ):
     """
     Read launch windows from CSV and calculate moon position for each window start time.
@@ -135,7 +159,11 @@ def calculate_moon_positions_for_launch_windows(csv_path: str = None, latitude= 
     - window_start_local: datetime of window start (local timezone)
     - window_stop_local: datetime of window stop (local timezone)
     - duration_mins: duration of launch window in minutes
-    - moon_position: dict from moon_position() function
+    - moon_position_start: dict from moon_position() function
+    - moon_position_end: dict from moon_position() function
+    - moonrise_utc: datetime of moonrise (UTC)
+    - moonrise_local: datetime of moonrise (local timezone)
+    - moon_illumination_start: float, percentage of illumination at window start
     """
     if csv_path is None:
         csv_path = Path(__file__).parent / "artemis_ii_mission_availability.csv"
@@ -156,6 +184,7 @@ def calculate_moon_positions_for_launch_windows(csv_path: str = None, latitude= 
         moon_pos_start = moon_position(dt_start_utc, latitude, longitude)
         moon_pos_end = moon_position(dt_end_utc, latitude, longitude)
         moonrise = moonrise_for_date(dt_start_utc.date(), latitude, longitude)
+        phase, illum = moon_illumination(dt_start_utc)
 
         results.append(
             {
@@ -168,24 +197,22 @@ def calculate_moon_positions_for_launch_windows(csv_path: str = None, latitude= 
                 "moon_position_end": moon_pos_end,
                 "moonrise_utc": moonrise,
                 "moonrise_local": moonrise.astimezone(tz),
+                "moon_illumination": illum,
+                "moon_phase": phase,
             }
         )
 
     return results
 
 if __name__ == '__main__':
-    # Quick example
-    now = datetime.utcnow().replace(tzinfo=timezone.utc)
-    print(moon_position(now))
-
     # Calculate moon positions for all launch windows
-    print("\nMoon positions for Artemis II launch windows:")
+    print("\nMoon positions for Artemis II & Apollo launch windows:")
     for n, window in enumerate(calculate_moon_positions_for_launch_windows()):
         moonrisedelta = window['moonrise_local'] - window['window_start_local']
         print(f"{n+1:02d}: ", end='')
         print(f"start {window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')}", end=' ')
         print(f"moonrise {window['moonrise_local'].strftime('%H:%M %Z')}", end=' ')
-        print(f" ({moonrisedelta.total_seconds()/60:3.0f} into window)", end=' ')
+        print(f" ({moonrisedelta.total_seconds()/60:3.0f} into window, {window['moon_illumination']:3.0f}% illuminated)", end=' ')
         print(f"end {window['window_end_local'].strftime('%H:%M %Z')}", end=' ')
         print()
         # f"start {window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')} "
