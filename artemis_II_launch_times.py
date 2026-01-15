@@ -1,9 +1,8 @@
-# python
-# file: `artemis_II_launch_times.py`
 import csv
 import zoneinfo
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional, Union
 
 try:
     from skyfield.api import Loader, Topos
@@ -17,6 +16,42 @@ _eph = _loader('de421.bsp')
 KSC_LAT = 28.57
 KSC_LON = -80.65
 KSC_TZ = "America/New_York"
+
+
+def moonrise_for_date(date_or_dt: Union[date, datetime],
+                      latitude: float = KSC_LAT,
+                      longitude: float = KSC_LON) -> Optional[datetime]:
+    """
+    Return the UTC datetime of the first moonrise on the given date at (latitude, longitude).
+    - date_or_dt: datetime.date or datetime.datetime (time portion ignored)
+    - returns: timezone-aware UTC datetime of moonrise, or None if no rise during that UTC day
+    """
+    from skyfield import almanac
+
+    if isinstance(date_or_dt, datetime):
+        d = date_or_dt.date()
+    elif isinstance(date_or_dt, date):
+        d = date_or_dt
+    else:
+        raise TypeError("date_or_dt must be a datetime.date or datetime.datetime")
+
+    start_utc = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+    end_utc = start_utc + timedelta(days=1)
+
+    t0 = _ts.utc(start_utc)
+    t1 = _ts.utc(end_utc)
+
+    topos = Topos(latitude_degrees=latitude, longitude_degrees=longitude)
+    f = almanac.risings_and_settings(_eph, _eph['moon'], topos)
+
+    times, events = almanac.find_discrete(t0, t1, f)
+
+    # events: 1 indicates a rise event (return the first one)
+    for ti, ev in zip(times, events):
+        if ev == 1:
+            return ti.utc_datetime()
+
+    return None
 
 def moon_position(dt: datetime, latitude: float = KSC_LAT, longitude: float = KSC_LON):
     """
@@ -113,21 +148,28 @@ def calculate_moon_positions_for_launch_windows(csv_path: str = None, latitude= 
     for row in rows:
         dt_start_utc = row['window_start_utc']
         duration = int(row['duration_mins'])
-        dt_stop_utc = dt_start_utc + timedelta(minutes=duration)
+        dt_end_utc = dt_start_utc + timedelta(minutes=duration)
 
         dt_start_local = dt_start_utc.astimezone(tz)
-        dt_stop_local = dt_stop_utc.astimezone(tz)
+        dt_end_local = dt_end_utc.astimezone(tz)
 
-        moon_pos = moon_position(dt_start_utc, latitude, longitude)
+        moon_pos_start = moon_position(dt_start_utc, latitude, longitude)
+        moon_pos_end = moon_position(dt_end_utc, latitude, longitude)
+        moonrise = moonrise_for_date(dt_start_utc.date(), latitude, longitude)
 
-        results.append({
-            'window_start_utc': dt_start_utc,
-            'window_stop_utc': dt_stop_utc,
-            'window_start_local': dt_start_local,
-            'window_stop_local': dt_stop_local,
-            'duration_mins': duration,
-            'moon_position': moon_pos
-        })
+        results.append(
+            {
+                "window_start_utc": dt_start_utc,
+                "window_end_utc": dt_end_utc,
+                "window_start_local": dt_start_local,
+                "window_end_local": dt_end_local,
+                "duration_mins": duration,
+                "moon_position_start": moon_pos_start,
+                "moon_position_end": moon_pos_end,
+                "moonrise_utc": moonrise,
+                "moonrise_local": moonrise.astimezone(tz),
+            }
+        )
 
     return results
 
@@ -138,8 +180,15 @@ if __name__ == '__main__':
 
     # Calculate moon positions for all launch windows
     print("\nMoon positions for Artemis II launch windows:")
-    for window in calculate_moon_positions_for_launch_windows():
-        print(f"\n{window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')} - "
-              f"{window['window_stop_local'].strftime('%H:%M %Z')}: "
-              f"Alt={window['moon_position']['altitude_deg']:.1f}°, "
-              f"Az={window['moon_position']['azimuth_deg']:.1f}°")
+    for n, window in enumerate(calculate_moon_positions_for_launch_windows()):
+        moonrisedelta = window['moonrise_local'] - window['window_start_local']
+        print(f"{n+1:02d}: ", end='')
+        print(f"start {window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')}", end=' ')
+        print(f"moonrise {window['moonrise_local'].strftime('%H:%M %Z')}", end=' ')
+        print(f" ({moonrisedelta.total_seconds()/60:3.0f} into window)", end=' ')
+        print(f"end {window['window_end_local'].strftime('%H:%M %Z')}", end=' ')
+        print()
+        # f"start {window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')} "
+            #   f"moonrise {window['moonrise_local'].strftime('%Y-%m-%d %H:%M %Z')} "
+            #   f"end {window['window_start_local'].strftime('%Y-%m-%d %H:%M %Z')} "
+            #   )

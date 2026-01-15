@@ -3,6 +3,9 @@ import math
 import zoneinfo
 from datetime import datetime, timezone
 from pathlib import Path
+import skyfield.almanac as almanac_module
+import pytest
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -12,6 +15,7 @@ from artemis_II_launch_times import (
 load_launch_windows_from_csv,
     calculate_moon_positions_for_launch_windows,
     moon_position,
+moonrise_for_date,
 )
 
 def test_load_launch_windows_from_csv(tmp_path):
@@ -92,37 +96,61 @@ def test_calculate_moon_positions_for_launch_windows():
     # Check structure of first result
     first = results[0]
     expected_keys = {
-        'window_start_utc', 'window_stop_utc',
-        'window_start_local', 'window_stop_local',
-        'duration_mins', 'moon_position'
+        'window_start_utc', 'window_end_utc',
+        'window_start_local', 'window_end_local',
+        'duration_mins', 'moon_position_start','moon_position_end',
     }
     assert set(first.keys()) == expected_keys
 
     # Verify datetime types and timezones
-    assert isinstance(first['window_start_utc'], datetime)
-    assert first['window_start_utc'].tzinfo == timezone.utc
-    assert isinstance(first['window_stop_utc'], datetime)
-    assert first['window_stop_utc'].tzinfo == timezone.utc
-
-    assert isinstance(first['window_start_local'], datetime)
-    assert first['window_start_local'].tzinfo == zoneinfo.ZoneInfo(KSC_TZ)
-    assert isinstance(first['window_stop_local'], datetime)
-    assert first['window_stop_local'].tzinfo == zoneinfo.ZoneInfo(KSC_TZ)
+    for attr in ['start', 'end']:
+        assert isinstance(first[f'window_{attr}_utc'], datetime)
+        assert first[f'window_{attr}_utc'].tzinfo == timezone.utc
+        assert first[f'window_{attr}_local'].tzinfo == zoneinfo.ZoneInfo(KSC_TZ)
 
     # Verify duration calculation
     duration_mins = first['duration_mins']
     assert isinstance(duration_mins, int)
     assert duration_mins > 0
-    calculated_duration = (first['window_stop_utc'] - first['window_start_utc']).total_seconds() / 60
+    calculated_duration = (first['window_end_utc'] - first['window_start_utc']).total_seconds() / 60
     assert calculated_duration == pytest.approx(duration_mins)
 
     # Verify moon_position structure
-    assert isinstance(first['moon_position'], dict)
-    assert 'altitude_deg' in first['moon_position']
-    assert 'azimuth_deg' in first['moon_position']
-    assert math.isfinite(first['moon_position']['altitude_deg'])
-    assert math.isfinite(first['moon_position']['azimuth_deg'])
+    for attr in ['start', 'end']:
+        assert isinstance(first[f'moon_position_{attr}'], dict)
+        assert 'altitude_deg' in first[f'moon_position_{attr}']
+        assert 'azimuth_deg' in first[f'moon_position_{attr}']
+        assert math.isfinite(first[f'moon_position_{attr}']['altitude_deg'])
+        assert math.isfinite(first[f'moon_position_{attr}']['azimuth_deg'])
 
+class _DummyTime:
+    def __init__(self, dt: datetime):
+        self._dt = dt
+
+    def utc_datetime(self) -> datetime:
+        return self._dt
+
+
+def test_moonrise_found(monkeypatch):
+    expected = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    def fake_find_discrete(t0, t1, f):
+        return [ _DummyTime(expected) ], [1]
+
+    monkeypatch.setattr(almanac_module, "find_discrete", fake_find_discrete)
+
+    result = moonrise_for_date(date(2025, 1, 2))
+    assert result == expected
+
+
+def test_moonrise_not_found(monkeypatch):
+    def fake_find_discrete_empty(t0, t1, f):
+        return [], []
+
+    monkeypatch.setattr(almanac_module, "find_discrete", fake_find_discrete_empty)
+
+    result = moonrise_for_date(date(2025, 1, 2))
+    assert result is None
 if __name__ == '__main__':
     import sys
     sys.exit(pytest.main([__file__, '-vvv']))
